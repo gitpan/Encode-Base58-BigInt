@@ -9,6 +9,7 @@ use Test::Most::Exception 'throw_failure';
 # XXX don't use 'base' as it can override signal handlers
 use Test::Builder::Module;
 our ( @ISA, @EXPORT, $DATA_DUMPER_NAMES_INSTALLED );
+my $HAVE_TIME_HIRES;
 
 BEGIN {
 
@@ -17,6 +18,8 @@ BEGIN {
     require Test::More;
     @Test::More::EXPORT = grep { $_ ne 'explain' } @Test::More::EXPORT;
     Test::More->import;
+    eval "use Time::HiRes";
+    $HAVE_TIME_HIRES = 1 unless $@;
 }
 
 use Test::Builder;
@@ -25,12 +28,12 @@ BEGIN {
     $OK_FUNC = \&Test::Builder::ok;
 }
 
-#line 35
+#line 38
 
-our $VERSION = '0.22';
+our $VERSION = '0.31';
 $VERSION = eval $VERSION;
 
-#line 386
+#line 437
 
 BEGIN {
     @ISA    = qw(Test::Builder::Module);
@@ -80,7 +83,25 @@ sub import {
             last;
         }
     }
+    my $caller = caller;
+    for my $i ( 0 .. $#_ ) {
+        if ( 'timeit' eq $_[$i] ) {
+            splice @_, $i, 1;
+            no strict;
+            *{"${caller}::timeit"} = \&timeit;
+            last;
+        }
+    }
+
+    my %exclude_symbol;
     my $i = 0;
+
+    if ( grep { $_ eq 'blessed' } @_ ) {
+        @_ = grep { $_ ne 'blessed' } @_;
+    }
+    else {
+        $exclude_symbol{blessed} = 1;
+    }
     while ($i < @_) {
         if ( !$bail_set and ( 'die' eq $_[$i] ) ) {
             splice @_, $i, 1;
@@ -99,6 +120,12 @@ sub import {
             $i = 0;
             next;
         }
+        if ( $_[$i] =~ /^!(.*)/ ) {
+            splice @_, $i, 1;
+            $exclude_symbol{$1} = 1;
+            $i = 0;
+            next;
+        }
         if ( 'defer_plan' eq $_[$i] ) {
             splice @_, $i, 1;
 
@@ -114,12 +141,14 @@ sub import {
     }
     foreach my $module (keys %modules_to_load) {
         eval "use $module";
-        no strict 'refs';
-        push @EXPORT => @{"${module}::EXPORT"};
+
         if ( my $error = $@) {
             require Carp;
             Carp::croak($error);
         }
+        no strict 'refs';
+        # Note: export_to_level would be better here.
+        push @EXPORT => grep { !$exclude_symbol{$_} } @{"${module}::EXPORT"};
     }
 
     # 'magic' goto to avoid updating the callstack
@@ -128,6 +157,23 @@ sub import {
 
 sub explain {
     _explain(\&Test::More::note, @_);
+}
+
+
+sub timeit(&;$) {
+    my ( $code, $message ) = @_;
+    unless($HAVE_TIME_HIRES) {
+        Test::Most::diag("timeit: Time::HiRes not installed");
+        $code->();
+    }
+    if ( !$message ) {
+        my ( $package, $filename, $line ) = caller;
+        $message = "$filename line $line";
+    }
+    my $start = [Time::HiRes::gettimeofday()];
+    $code->();
+    explain(
+        sprintf "$message: took %s seconds" => Time::HiRes::tv_interval($start) );
 }
 
 sub always_explain {
@@ -162,7 +208,8 @@ sub always_show {
 
 sub _show {
     unless ( $DATA_DUMPER_NAMES_INSTALLED ) {
-        warn "Data::Dumper::Names 0.03 not found.  Use explain() instead of show()";
+        require Carp;
+	Carp::carp("Data::Dumper::Names 0.03 not found.  Use explain() instead of show()");
         goto &_explain;
     }
     my $diag = shift;
@@ -248,6 +295,6 @@ END {
 
 1;
 
-#line 711
+#line 806
 
 1;
